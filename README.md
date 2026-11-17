@@ -28,7 +28,7 @@ ruff check app tests
 | Path | Role |
 | --- | --- |
 | `app/main.py` | Process entry point. It does not load images or solve. |
-| `app/core/` | Grid geometry, clue validation, candidates, and the solver. |
+| `app/core/` | Grid geometry, `sudoku_validator`, `candidate_generator`, and `sudoku_solver`. |
 | `app/vision/` | Future boundary detection, warp, and cell extraction. |
 | `app/recognition/` | Future digit recognition and confidence scores. |
 | `app/models/` | Future runtime model files. Training stays out of this package. |
