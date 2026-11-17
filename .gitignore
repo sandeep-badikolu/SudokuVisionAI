@@ -33,3 +33,4 @@ mlruns/
 ml/datasets/*
 !ml/datasets/.gitkeep
 ml/training/outputs/
+evaluation_output/

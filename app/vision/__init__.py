@@ -1,5 +1,39 @@
-"""Image processing for Sudoku photographs and screenshots.
+"""Image loading, preprocessing, and Sudoku grid geometry.
 
-Boundary detection, perspective correction, and cell extraction will live
-here. This package does not recognize digits or solve puzzles.
+This package does not recognize digits and does not solve puzzles.
 """
+
+from app.vision.cell_segmenter import (
+    SUPPORTED_ORDERS,
+    CellPatch,
+    segment_cells,
+)
+from app.vision.errors import (
+    CellSegmentationError,
+    GridDetectionError,
+    ImageInputError,
+    VisionError,
+)
+from app.vision.grid_detector import GridDetection, detect_grid, extract_cells
+from app.vision.image_loader import LoadedImage, load_image
+from app.vision.image_preprocessor import PreprocessedImage, preprocess
+from app.vision.perspective_transform import order_corners, warp_quad
+
+__all__ = [
+    "SUPPORTED_ORDERS",
+    "CellPatch",
+    "CellSegmentationError",
+    "GridDetection",
+    "GridDetectionError",
+    "ImageInputError",
+    "LoadedImage",
+    "PreprocessedImage",
+    "VisionError",
+    "detect_grid",
+    "extract_cells",
+    "load_image",
+    "order_corners",
+    "preprocess",
+    "segment_cells",
+    "warp_quad",
+]
