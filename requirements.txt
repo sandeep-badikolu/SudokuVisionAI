@@ -1,0 +1,12 @@
+# Declared for later installation. This file does not install anything.
+# Runtime libraries named in AGENTS.md. Versions are left unpinned until
+# the milestone that first imports each library.
+numpy
+opencv-python
+pillow
+torch
+streamlit
+
+# Development
+pytest>=8
+ruff>=0.8

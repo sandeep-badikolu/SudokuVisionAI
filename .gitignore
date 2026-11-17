@@ -1,0 +1,35 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors
+.idea/
+.vscode/
+
+# ML artifacts
+.ipynb_checkpoints/
+wandb/
+mlruns/
+*.pt
+*.pth
+*.onnx
+*.ckpt
+ml/datasets/*
+!ml/datasets/.gitkeep
+ml/training/outputs/
