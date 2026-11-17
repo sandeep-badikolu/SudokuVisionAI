@@ -13,12 +13,12 @@ import numpy as np
 
 from app.vision.cell_segmenter import (
     NORMALIZED_SIDE,
-    SUPPORTED_ORDERS,
     CellPatch,
     segment_cells,
 )
 from app.vision.errors import GridDetectionError
-from app.vision.image_preprocessor import adaptive_threshold, preprocess
+from app.vision.grid_lines import GridLineAnalysis, analyze_grid_lines
+from app.vision.image_preprocessor import preprocess
 from app.vision.perspective_transform import order_corners, warp_quad
 
 _MIN_AREA_FRACTION = 0.08
@@ -27,8 +27,6 @@ _MIN_SIDE_RATIO = 0.5
 _MIN_ANGLE = 40.0
 _MAX_ANGLE = 150.0
 _MIN_CONFIDENCE = 0.6
-_LINE_RELATIVE = 0.45
-_MAX_GAP_RATIO = 1.65
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,12 +39,29 @@ class GridQuad:
 
 
 @dataclass(frozen=True, slots=True)
+class BoundaryEvidence:
+    """A warped quadrilateral whose grid lines have not been accepted.
+
+    This is the evidence saved when the boundary is valid and the line check
+    is not. It does not mean a grid order was detected.
+    """
+
+    corners: np.ndarray
+    quad_confidence: float
+    warped: np.ndarray
+    overlay: np.ndarray
+    lines: GridLineAnalysis
+
+
+@dataclass(frozen=True, slots=True)
 class GridDetection:
     """A warped Sudoku grid and the evidence used to accept it.
 
-    ``order`` is the detected cell count along one side: 4, 6, or 9.
-    ``diagnostics`` holds copies of the threshold, edges, and an overlay of
-    the accepted corners. None of these arrays alias the caller's image.
+    ``confidence`` and ``quad_confidence`` are the quadrilateral geometry
+    score. ``grid_confidence`` is the line-spacing score and is independent
+    of that geometry. ``order`` is present only after the lines validate a
+    4, 6, or 9 grid. ``diagnostics`` holds copies of the threshold, edges,
+    corner overlay, and projection profiles.
     """
 
     corners: np.ndarray
@@ -54,6 +69,9 @@ class GridDetection:
     warped: np.ndarray
     order: int
     diagnostics: dict[str, np.ndarray]
+    quad_confidence: float
+    grid_confidence: float
+    lines: GridLineAnalysis
 
 
 def detect_grid(image: np.ndarray) -> GridDetection:
@@ -73,21 +91,36 @@ def detect_grid(image: np.ndarray) -> GridDetection:
             f"is below {_MIN_CONFIDENCE:.2f}"
         )
     warped = warp_quad(prepared.source, best.corners, NORMALIZED_SIDE)
-    order = estimate_grid_order(warped)
-    if order is None:
-        raise GridDetectionError(
-            "warped region does not contain a regular 4, 6, or 9 grid"
+    analysis = analyze_grid_lines(warped)
+    overlay = _overlay(prepared.source, best.corners)
+    if analysis.order is None:
+        error = GridDetectionError(
+            analysis.rejection_reason
+            or "warped region does not contain a regular 4, 6, or 9 grid"
         )
+        error.boundary = BoundaryEvidence(
+            corners=best.corners.copy(),
+            quad_confidence=best.confidence,
+            warped=warped,
+            overlay=overlay,
+            lines=analysis,
+        )
+        raise error
     return GridDetection(
         corners=best.corners.copy(),
         confidence=best.confidence,
         warped=warped,
-        order=order,
+        order=analysis.order,
         diagnostics={
             "threshold": prepared.threshold.copy(),
             "edges": prepared.edges.copy(),
-            "overlay": _overlay(prepared.source, best.corners),
+            "overlay": overlay,
+            "horizontal_profile": analysis.horizontal_profile,
+            "vertical_profile": analysis.vertical_profile,
         },
+        quad_confidence=best.confidence,
+        grid_confidence=float(analysis.grid_confidence or 0.0),
+        lines=analysis,
     )
 
 
@@ -111,20 +144,11 @@ def extract_cells(
 def estimate_grid_order(warped: np.ndarray) -> int | None:
     """Infer 4, 6, or 9 from regular horizontal and vertical line spacing.
 
-    Returns ``None`` when the two directions disagree or the spacing is uneven.
+    Nearby edge peaks from one thick stroke are grouped first. Returns
+    ``None`` when the directions disagree, the spacing is uneven, or no
+    supported order has a single consistent explanation.
     """
-    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY) if warped.ndim == 3 else warped
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    lines = cv2.bitwise_not(adaptive_threshold(blurred))
-    horizontal = _line_centers(lines.mean(axis=1))
-    vertical = _line_centers(lines.mean(axis=0))
-    horizontal_order = _order_from_centers(horizontal)
-    vertical_order = _order_from_centers(vertical)
-    if horizontal_order is None or horizontal_order != vertical_order:
-        return None
-    if horizontal_order not in SUPPORTED_ORDERS:
-        return None
-    return horizontal_order
+    return analyze_grid_lines(warped).order
 
 
 def _candidate_quads(threshold: np.ndarray, shape: tuple[int, ...]) -> list[GridQuad]:
@@ -194,34 +218,6 @@ def _interior_angles(corners: np.ndarray) -> list[float]:
         cosine = float(np.clip(np.dot(first, second) / denom, -1.0, 1.0))
         angles.append(math.degrees(math.acos(cosine)))
     return angles
-
-
-def _line_centers(projection: np.ndarray) -> list[int]:
-    if projection.size == 0 or float(projection.max()) == 0:
-        return []
-    active = projection >= (_LINE_RELATIVE * float(projection.max()))
-    centers: list[int] = []
-    start: int | None = None
-    for index, flag in enumerate(active.tolist()):
-        if flag and start is None:
-            start = index
-        elif not flag and start is not None:
-            centers.append((start + index - 1) // 2)
-            start = None
-    if start is not None:
-        centers.append((start + len(active) - 1) // 2)
-    return centers
-
-
-def _order_from_centers(centers: list[int]) -> int | None:
-    if len(centers) < 5:
-        return None
-    gaps = np.diff(np.asarray(centers, dtype=np.float32))
-    if float(gaps.min()) <= 0:
-        return None
-    if float(gaps.max()) > _MAX_GAP_RATIO * float(gaps.min()):
-        return None
-    return len(centers) - 1
 
 
 def _overlay(image: np.ndarray, corners: np.ndarray) -> np.ndarray:

@@ -28,6 +28,7 @@ from app.vision import (
     preprocess,
     segment_cells,
 )
+from app.vision.errors import GridDetectionError
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 _NOTE = (
@@ -50,6 +51,10 @@ class ImageResult:
     confidence: float | None
     elapsed_seconds: float
     failure_reason: str | None
+    boundary_detected: bool = False
+    quad_confidence: float | None = None
+    grid_confidence: float | None = None
+    lines: dict[str, object] | None = None
 
 
 def evaluate_directory(
@@ -168,6 +173,10 @@ def _evaluate_one(
     confidence: float | None = None
     failure_reason: str | None = None
     success = False
+    boundary_detected = False
+    quad_confidence: float | None = None
+    grid_confidence: float | None = None
+    lines: dict[str, object] | None = None
     try:
         loaded = load_image(path)
         destination.mkdir(parents=True, exist_ok=True)
@@ -176,13 +185,35 @@ def _evaluate_one(
         _write_image(destination / "grayscale.png", prepared.gray)
         _write_image(destination / "threshold.png", prepared.threshold)
         _write_image(destination / "edges.png", prepared.edges)
-        detection = detect_grid(loaded.original)
+        try:
+            detection = detect_grid(loaded.original)
+        except GridDetectionError as exc:
+            if exc.boundary is not None:
+                boundary_detected = True
+                quad_confidence = float(exc.boundary.quad_confidence)
+                lines = exc.boundary.lines.to_report()
+                _write_boundary(
+                    destination,
+                    exc.boundary.overlay,
+                    exc.boundary.warped,
+                    exc.boundary.lines.horizontal_profile,
+                    exc.boundary.lines.vertical_profile,
+                )
+            raise
         detected = True
         detected_order = detection.order
         confidence = float(detection.confidence)
-        overlay = detection.diagnostics["overlay"]
-        _write_image(destination / "grid_boundary.png", overlay)
-        _write_image(destination / "perspective_grid.png", detection.warped)
+        quad_confidence = float(detection.quad_confidence)
+        grid_confidence = float(detection.grid_confidence)
+        lines = detection.lines.to_report()
+        boundary_detected = True
+        _write_boundary(
+            destination,
+            detection.diagnostics["overlay"],
+            detection.warped,
+            detection.diagnostics["horizontal_profile"],
+            detection.diagnostics["vertical_profile"],
+        )
         cells = segment_cells(detection.warped, detection.order)
         cell_dir = destination / "cells"
         cell_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +240,10 @@ def _evaluate_one(
         confidence=confidence,
         elapsed_seconds=elapsed,
         failure_reason=failure_reason,
+        boundary_detected=boundary_detected,
+        quad_confidence=quad_confidence,
+        grid_confidence=grid_confidence,
+        lines=lines,
     )
 
 
@@ -224,6 +259,7 @@ def _report(
     image_dir: Path, results: list[ImageResult], skipped: list[str]
 ) -> dict[str, object]:
     detected_count = sum(1 for result in results if result.detected)
+    boundary_count = sum(1 for result in results if result.boundary_detected)
     failure_count = sum(1 for result in results if not result.success)
     compared = [result for result in results if result.expected_order is not None]
     matched = sum(1 for result in compared if result.order_matches is True)
@@ -232,6 +268,7 @@ def _report(
         "image_directory": str(image_dir),
         "image_count": len(results),
         "detected_count": detected_count,
+        "boundary_detected_count": boundary_count,
         "failure_count": failure_count,
         "images_with_expected_order": len(compared),
         "expected_order_match_count": matched,
@@ -251,6 +288,18 @@ def _write_report(output_dir: Path, report: dict[str, object]) -> None:
         "expected_order",
         "order_matches",
         "confidence",
+        "quad_confidence",
+        "grid_confidence",
+        "boundary_detected",
+        "raw_horizontal_peaks",
+        "merged_horizontal_peaks",
+        "horizontal_order",
+        "horizontal_gap_ratio",
+        "raw_vertical_peaks",
+        "merged_vertical_peaks",
+        "vertical_order",
+        "vertical_gap_ratio",
+        "line_recovery",
         "elapsed_seconds",
         "failure_reason",
     ]
@@ -258,7 +307,56 @@ def _write_report(output_dir: Path, report: dict[str, object]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in report["results"]:
-            writer.writerow({name: row[name] for name in fieldnames})  # type: ignore[index]
+            writer.writerow(_csv_row(row))  # type: ignore[arg-type]
+
+
+def _write_boundary(
+    destination: Path,
+    overlay: object,
+    warped: object,
+    horizontal_profile: object,
+    vertical_profile: object,
+) -> None:
+    _write_image(destination / "grid_boundary.png", overlay)
+    _write_image(destination / "perspective_grid.png", warped)
+    _write_image(destination / "horizontal_profile.png", horizontal_profile)
+    _write_image(destination / "vertical_profile.png", vertical_profile)
+
+
+def _csv_row(row: dict[str, object]) -> dict[str, object]:
+    lines = row.get("lines")
+    horizontal: dict[str, object] = {}
+    vertical: dict[str, object] = {}
+    recovery = None
+    if isinstance(lines, dict):
+        if isinstance(lines.get("horizontal"), dict):
+            horizontal = lines["horizontal"]
+        if isinstance(lines.get("vertical"), dict):
+            vertical = lines["vertical"]
+        recovery = lines.get("recovery")
+    return {
+        "filename": row.get("filename"),
+        "success": row.get("success"),
+        "detected": row.get("detected"),
+        "detected_order": row.get("detected_order"),
+        "expected_order": row.get("expected_order"),
+        "order_matches": row.get("order_matches"),
+        "confidence": row.get("confidence"),
+        "quad_confidence": row.get("quad_confidence"),
+        "grid_confidence": row.get("grid_confidence"),
+        "boundary_detected": row.get("boundary_detected"),
+        "raw_horizontal_peaks": horizontal.get("raw_peaks"),
+        "merged_horizontal_peaks": horizontal.get("merged_peaks"),
+        "horizontal_order": horizontal.get("inferred_order"),
+        "horizontal_gap_ratio": horizontal.get("gap_ratio"),
+        "raw_vertical_peaks": vertical.get("raw_peaks"),
+        "merged_vertical_peaks": vertical.get("merged_peaks"),
+        "vertical_order": vertical.get("inferred_order"),
+        "vertical_gap_ratio": vertical.get("gap_ratio"),
+        "line_recovery": recovery,
+        "elapsed_seconds": row.get("elapsed_seconds"),
+        "failure_reason": row.get("failure_reason"),
+    }
 
 
 def _write_image(path: Path, image: object) -> None:

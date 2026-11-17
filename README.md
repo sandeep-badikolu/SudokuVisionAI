@@ -58,7 +58,9 @@ The automated vision tests draw grids in memory. Those results show that the pip
 Known limits of this milestone:
 
 - Which side of the puzzle is "up" is not decided. Corner order follows the image axes.
-- Faint, broken, or decorative grid lines can fail the line-spacing check and be rejected.
+- Two nearby edge peaks from one thick stroke are grouped into that stroke. A lighter spike on the warped border can be grouped with the boundary line when it is closer than one cell. The check that rejects uneven spacing is unchanged.
+- One axis may be one peak high or one peak low only when the other axis is already a regular 4, 6, or 9 grid and that repair has one explanation. Disagreeing orders and irregular spacing are still rejected.
+- Faint, broken, or decorative grid lines can still fail the line-spacing check and be rejected.
 - Extra frames, page borders, or app chrome can outrank the puzzle or cause a rejection.
 - Extreme perspective, blur, or low contrast is outside what the synthetic tests cover.
 

@@ -70,6 +70,39 @@ def test_rejected_image_has_a_reason_and_no_confidence(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "blank.png" / "grayscale.png").is_file()
 
 
+def test_line_rejection_keeps_the_boundary_and_does_not_mark_a_grid(
+    tmp_path: Path,
+) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    image = np.full((320, 320, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (30, 30), (290, 290), (0, 0, 0), 4)
+    for position in (50, 70, 210, 250):
+        cv2.line(image, (30, position), (290, position), (0, 0, 0), 3)
+        cv2.line(image, (position, 30), (position, 290), (0, 0, 0), 3)
+    assert cv2.imwrite(str(images / "irregular.png"), image)
+    report = evaluate_directory(images, tmp_path / "out")
+    result = report["results"][0]
+    saved = tmp_path / "out" / "irregular.png"
+
+    assert result["success"] is False
+    assert result["detected"] is False
+    assert result["detected_order"] is None
+    assert result["confidence"] is None
+    assert result["grid_confidence"] is None
+    assert result["boundary_detected"] is True
+    assert result["quad_confidence"] is not None
+    assert result["quad_confidence"] >= 0.6
+    assert result["lines"]["order"] is None
+    assert result["lines"]["horizontal"]["raw_peaks"] > 0
+    assert "regular 4, 6, or 9" in result["failure_reason"]
+    assert (saved / "grid_boundary.png").is_file()
+    assert (saved / "perspective_grid.png").is_file()
+    assert (saved / "horizontal_profile.png").is_file()
+    assert (saved / "vertical_profile.png").is_file()
+    assert not (saved / "cells").exists()
+
+
 def test_expected_order_is_compared_and_not_turned_into_accuracy(
     tmp_path: Path,
 ) -> None:
