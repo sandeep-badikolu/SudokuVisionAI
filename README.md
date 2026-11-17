@@ -83,3 +83,16 @@ python scripts/evaluate_vision.py sample_images/real \
 ```
 
 Omit `--ground-truth` when you have not labeled sizes. The command writes `evaluation_output/report.json`, `evaluation_output/report.csv`, and one folder per image with the original file, grayscale, threshold, edges, detected boundary, perspective-corrected grid, and cell crops. A failed detection leaves the boundary and cell images out and records the failure reason. The report does not contain an accuracy percentage. `evaluation_output/` is gitignored.
+
+## Cell extraction
+
+`segment_cells` divides a square warp into equal cells. `extract_cells` uses the detected line centers when both axes have one line per boundary, so a margin around the puzzle is not split as if it were a cell. Each crop is inset from those lines.
+
+`app.recognition` classifies each crop as blank, occupied, or uncertain. A grid-line remnant or a speck is not treated as a digit. A faint coherent mark stays uncertain instead of being called empty. The confidence is confidence in that label. This step does not read which digit is printed.
+
+```bash
+python scripts/extract_cells.py sample_images/real \
+  --output evaluation_output/cell_extraction
+```
+
+The output has the warped grid, one image per cell, a contact sheet, `cells.json` for that image, and `report.json` for the directory. Counts of blank, occupied, and uncertain cells are not digit accuracy.

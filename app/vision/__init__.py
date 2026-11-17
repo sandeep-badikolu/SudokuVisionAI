@@ -7,6 +7,7 @@ from app.vision.cell_segmenter import (
     SUPPORTED_ORDERS,
     CellPatch,
     segment_cells,
+    segment_cells_at_lines,
 )
 from app.vision.errors import (
     CellSegmentationError,
@@ -35,5 +36,6 @@ __all__ = [
     "order_corners",
     "preprocess",
     "segment_cells",
+    "segment_cells_at_lines",
     "warp_quad",
 ]

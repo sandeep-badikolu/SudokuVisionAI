@@ -1,6 +1,22 @@
 """Digit recognition.
 
-A classical baseline recognizer, and later a PyTorch model, will turn cell
-images into digits and confidence scores. This package does not validate
-Sudoku rules.
+Blank-cell classification is the baseline step. A later model will read the
+occupied cells. This package does not validate Sudoku rules and does not
+solve puzzles.
 """
+
+from app.recognition.blank_cells import (
+    CellClassification,
+    CellStatus,
+    classify_cell,
+    classify_cells,
+    render_contact_sheet,
+)
+
+__all__ = [
+    "CellClassification",
+    "CellStatus",
+    "classify_cell",
+    "classify_cells",
+    "render_contact_sheet",
+]

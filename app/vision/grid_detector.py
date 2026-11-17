@@ -15,6 +15,7 @@ from app.vision.cell_segmenter import (
     NORMALIZED_SIDE,
     CellPatch,
     segment_cells,
+    segment_cells_at_lines,
 )
 from app.vision.errors import GridDetectionError
 from app.vision.grid_lines import GridLineAnalysis, analyze_grid_lines
@@ -138,6 +139,12 @@ def extract_cells(
             f"detected a {detection.order}×{detection.order} grid, not {order}×{order}"
         )
     chosen = detection.order if order is None else order
+    horizontal = detection.lines.horizontal.merged_centers
+    vertical = detection.lines.vertical.merged_centers
+    if len(horizontal) == chosen + 1 and len(vertical) == chosen + 1:
+        return detection, segment_cells_at_lines(
+            detection.warped, horizontal, vertical
+        )
     return detection, segment_cells(detection.warped, chosen)
 
 
