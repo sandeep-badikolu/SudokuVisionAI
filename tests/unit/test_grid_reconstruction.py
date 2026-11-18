@@ -174,6 +174,22 @@ def test_uncertain_cell_stays_unresolved_and_blocks_the_solver() -> None:
     assert built.unresolved_cells[0].row == 1
     assert built.unresolved_cells[0].col == 2
     assert built.unresolved_cells[0].status == RecognitionStatus.UNCERTAIN
+    assert built.unresolved_cells[0].confidence is None
+    assert built.unresolved_cells[0].blank_confidence == 0.4
+    recognized = next(
+        cell
+        for cell in built.recognition_metadata
+        if cell.value not in (0, None)
+    )
+    assert recognized.confidence == 0.9
+    assert recognized.blank_confidence == 0.4
+    uncertain_report = next(
+        item
+        for item in report["recognition_metadata"]
+        if item["row"] == 1 and item["col"] == 2
+    )
+    assert uncertain_report["confidence"] is None
+    assert uncertain_report["blank_confidence"] == 0.4
     assert report["grid"][1][2] is None
     assert report["solution"] is None
 

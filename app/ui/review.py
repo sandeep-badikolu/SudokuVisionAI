@@ -61,6 +61,29 @@ class DisplayCell:
     blank_confidence: float | None
 
 
+def confidence_caption(cell: DisplayCell) -> str:
+    """Describe digit and occupancy confidence without turning either into a digit.
+
+    A missing digit confidence means the matcher did not accept a digit.
+    The cell is not treated as blank, and the missing score is not a puzzle error.
+    """
+    if cell.uncertain:
+        state = "Uncertain recognition. The cell stays unresolved."
+    elif cell.value == 0:
+        state = "Blank."
+    else:
+        state = f"Recognized digit {cell.value}."
+    if cell.confidence is None:
+        digit = "Digit confidence is not available."
+    else:
+        digit = f"Digit confidence {cell.confidence:.2f}."
+    if cell.blank_confidence is None:
+        occupancy = "Occupancy confidence is not available."
+    else:
+        occupancy = f"Occupancy confidence {cell.blank_confidence:.2f}."
+    return f"{state} {digit} {occupancy}"
+
+
 @dataclass(frozen=True, slots=True)
 class CheckResult:
     """Validation of the corrected grid. This does not solve the puzzle."""

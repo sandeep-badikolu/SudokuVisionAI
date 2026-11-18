@@ -8,8 +8,10 @@ import pytest
 
 from app.ui.review import (
     CorrectionError,
+    DisplayCell,
     ProcessingError,
     UploadError,
+    confidence_caption,
     inspect_upload,
     process_upload,
     review_from_report,
@@ -32,6 +34,93 @@ def test_upload_rejects_the_wrong_type_size_and_corrupt_bytes(tmp_path: Path) ->
     with pytest.raises(UploadError, match="corrupt"):
         inspect_upload("photo.png", b"not a png")
     assert not (tmp_path / "photo.png").exists()
+
+
+def test_confidence_captions_keep_digit_and_occupancy_scores_separate() -> None:
+    recognized = _display(3, confidence=0.81, blank_confidence=0.66)
+    missing = _display(3, confidence=None, blank_confidence=0.66)
+    uncertain = _display(None, confidence=None, blank_confidence=0.42)
+    blank = _display(0, confidence=None, blank_confidence=0.93)
+    neither = _display(None, confidence=None, blank_confidence=None)
+
+    assert confidence_caption(recognized) == (
+        "Recognized digit 3. Digit confidence 0.81. Occupancy confidence 0.66."
+    )
+    assert "Digit confidence is not available." in confidence_caption(missing)
+    assert "Recognized digit 3." in confidence_caption(missing)
+    assert "Occupancy confidence 0.66." in confidence_caption(missing)
+    uncertain_text = confidence_caption(uncertain)
+    assert uncertain_text.startswith("Uncertain recognition.")
+    assert "Digit confidence is not available." in uncertain_text
+    assert "Occupancy confidence 0.42." in uncertain_text
+    assert "Blank." not in uncertain_text
+    assert confidence_caption(blank).startswith("Blank.")
+    assert "Occupancy confidence 0.93." in confidence_caption(blank)
+    assert "Occupancy confidence is not available." in confidence_caption(neither)
+
+
+def test_missing_digit_confidence_does_not_reject_a_complete_puzzle() -> None:
+    rows = [list(line) for line in COMPLETED[4]]
+    metadata = []
+    for row in range(4):
+        for col in range(4):
+            metadata.append(
+                {
+                    "row": row,
+                    "col": col,
+                    "status": "recognized" if rows[row][col] else "blank",
+                    "confidence": None,
+                    "blank_confidence": 0.5,
+                }
+            )
+    review = _review(
+        {"puzzle_order": 4, "grid": rows, "recognition_metadata": metadata}
+    )
+    cell = review.display_cells()[0]
+
+    assert cell.value == COMPLETED[4][0][0]
+    assert cell.confidence is None
+    assert cell.blank_confidence == 0.5
+    assert "Digit confidence is not available." in confidence_caption(cell)
+    assert review.validate().status == "valid"
+    assert review.solve_puzzle().status == "unique"
+
+
+def test_uncertain_cell_with_no_digit_confidence_can_still_be_corrected() -> None:
+    review = _review(_grid(uncertain=(0, 0), digit=((0, 1), 2)))
+    cell = review.display_cells()[0]
+    check = review.validate()
+
+    assert cell.value is None
+    assert cell.confidence is None
+    assert cell.blank_confidence == 0.8
+    assert review.ocr_grid[0][0] is None
+    assert check.status == "needs_correction"
+    assert check.errors == ("Row 1, column 1 is uncertain.",)
+    assert "confidence" not in check.errors[0]
+    review.set_cell(0, 0, 3)
+    corrected = review.display_cells()[0]
+    assert corrected.value == 3
+    assert corrected.uncertain is False
+    assert review.ocr_grid[0][0] is None
+
+
+def _display(
+    value: int | None,
+    *,
+    confidence: float | None,
+    blank_confidence: float | None,
+):
+    return DisplayCell(
+        row=0,
+        col=0,
+        value=value,
+        ocr_value=value,
+        source="ocr",
+        uncertain=value is None,
+        confidence=confidence,
+        blank_confidence=blank_confidence,
+    )
 
 
 def test_display_keeps_uncertain_cells_distinct_from_blanks() -> None:

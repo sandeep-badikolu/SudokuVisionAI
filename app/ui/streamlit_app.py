@@ -6,6 +6,8 @@ This file only displays their results and records manual corrections.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from app.ui.review import (
@@ -15,19 +17,22 @@ from app.ui.review import (
     PuzzleReview,
     SolutionCell,
     UploadError,
+    confidence_caption,
     process_upload,
 )
 
 _BOXES = {4: (2, 2), 6: (2, 3), 9: (3, 3)}
 
 
+st.set_page_config(
+    page_title="SudokuVision AI",
+    page_icon=":material/grid_on:",
+    layout="wide",
+)
+
+
 def main() -> None:
     """Render the upload, review, and solution sections."""
-    st.set_page_config(
-        page_title="SudokuVision AI",
-        page_icon=":material/grid_on:",
-        layout="wide",
-    )
     st.markdown(_STYLE, unsafe_allow_html=True)
     st.title("SudokuVision AI")
     st.write(
@@ -37,7 +42,7 @@ def main() -> None:
     st.caption(
         "Template matching can miss a digit. Uncertain cells stay unresolved "
         "until you edit them. This screen does not report a measured "
-        "photograph accuracy."
+        "photograph accuracy. Use the Annotation page to label extracted cells."
     )
     uploaded = st.file_uploader(
         "Photograph",
@@ -98,7 +103,7 @@ def _images(review: PuzzleReview) -> None:
             if image is None:
                 st.caption(f"{label} is unavailable.")
             else:
-                st.image(image, caption=label, use_container_width=True)
+                st.image(image, caption=label, width="stretch")
 
 
 def _grid_section(review: PuzzleReview) -> None:
@@ -114,7 +119,7 @@ def _grid_section(review: PuzzleReview) -> None:
             for cell in uncertain:
                 st.write(
                     f"Row {cell.row + 1}, column {cell.col + 1}. "
-                    f"{_confidence_text(cell)}"
+                    f"{confidence_caption(cell)}"
                 )
 
 
@@ -136,14 +141,14 @@ def _editor(review: PuzzleReview) -> None:
     selected = review.display_cells()[(int(row) - 1) * review.order + (int(column) - 1)]
     st.caption(
         f"OCR value: {_value_text(selected.ocr_value)}. "
-        f"Current value: {_value_text(selected.value)}. {_confidence_text(selected)}"
+        f"Current value: {_value_text(selected.value)}. {confidence_caption(selected)}"
     )
     apply, restore = st.columns(2)
-    if apply.button("Apply correction", use_container_width=True):
+    if apply.button("Apply correction", width="stretch"):
         digit = 0 if digit_label == "Blank" else int(str(digit_label))
         review.set_cell(int(row) - 1, int(column) - 1, digit)
         st.rerun()
-    if restore.button("Restore OCR value", use_container_width=True):
+    if restore.button("Restore OCR value", width="stretch"):
         review.clear_cell(int(row) - 1, int(column) - 1)
         st.rerun()
 
@@ -151,13 +156,13 @@ def _editor(review: PuzzleReview) -> None:
 def _actions(review: PuzzleReview) -> None:
     st.subheader("Validate and solve")
     validate, solve, reset = st.columns(3)
-    if validate.button("Validate puzzle", use_container_width=True):
+    if validate.button("Validate puzzle", width="stretch"):
         review.validate()
         st.rerun()
-    if solve.button("Solve puzzle", use_container_width=True):
+    if solve.button("Solve puzzle", width="stretch"):
         review.solve_puzzle()
         st.rerun()
-    if reset.button("Reset corrections", use_container_width=True):
+    if reset.button("Reset corrections", width="stretch"):
         review.reset()
         st.rerun()
     if review.check is not None:
@@ -230,14 +235,6 @@ def _value_text(value: int | None) -> str:
     return str(value)
 
 
-def _confidence_text(cell: DisplayCell) -> str:
-    if cell.value == 0 and cell.blank_confidence is not None:
-        return f"Blank confidence {cell.blank_confidence:.2f}."
-    if cell.confidence is not None:
-        return f"Digit confidence {cell.confidence:.2f}."
-    return "No digit confidence is available."
-
-
 _STYLE = """
 <style>
 .sv-grid { border-collapse: collapse; margin: 0.25rem 0 0.75rem; }
@@ -256,4 +253,13 @@ _STYLE = """
 """
 
 
-main()
+_PAGES = st.navigation(
+    [
+        st.Page(main, title="Review", default=True),
+        st.Page(
+            Path(__file__).parent / "pages" / "Annotation.py",
+            title="Annotation",
+        ),
+    ]
+)
+_PAGES.run()
