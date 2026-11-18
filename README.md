@@ -1,20 +1,34 @@
 # SudokuVision AI
 
-Recognize a Sudoku from a photograph or screenshot, validate it, and solve it.
+Recognize a Sudoku from a photograph or screenshot, review the digits, validate the puzzle, and solve it.
 
-The repository has the puzzle solver and the first computer-vision stage: load a JPEG or PNG, find a grid boundary, correct perspective, and split the grid into cells. Digit recognition and the Streamlit UI are not implemented.
+The processing engine detects the grid, reads printed digits with template matching, and solves a complete valid puzzle. The Streamlit application is the review screen on top of that engine.
 
 ## Requirements
 
 - Python 3.12 or newer
 
-Dependencies are listed in `requirements.txt` and are not installed by the scaffold. When you choose to install them:
-
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
+
+## Application
+
+The app accepts a PNG or JPEG up to 10 MB, shows the detected grid and extracted cells, and lets you correct the reconstruction before validation or solving. Uncertain cells stay unresolved until you enter a digit or a blank. Original OCR values are kept separate from those edits. Reset restores the OCR grid. Solve runs only after every cell is resolved and the puzzle is valid.
+
+```bash
+python -m streamlit run app/ui/streamlit_app.py
+```
+
+1. Upload a photograph and choose Process image. Leave the grid size on automatic detection unless you already know it.
+2. Compare the original, the detected boundary, the straightened grid, and the contact sheet.
+3. Select a cell, enter a digit or Blank, and apply the correction. Use Restore OCR value to drop that one edit.
+4. Choose Validate puzzle to see duplicate rows, columns, and boxes.
+5. Choose Solve puzzle. A unique solution marks clues in bold and solver-filled cells in blue. An unsolvable puzzle and a puzzle with several solutions do not show a chosen grid.
+
+Photographs in this repository are not a labelled accuracy benchmark. Correct the grid before trusting a solution. A CNN is a later milestone.
 
 ## Tests
 
@@ -27,12 +41,12 @@ ruff check app tests
 
 | Path | Role |
 | --- | --- |
-| `app/main.py` | Process entry point. It does not load images or solve. |
+| `app/main.py` | Prints the Streamlit launch command. |
 | `app/core/` | Grid geometry, `sudoku_validator`, `candidate_generator`, and `sudoku_solver`. |
 | `app/vision/` | Image loading, preprocessing, grid detection, perspective warp, and cell crops. |
-| `app/recognition/` | Future digit recognition and confidence scores. |
+| `app/recognition/` | Blank-cell classification, template digit recognition, and grid reconstruction. |
 | `app/models/` | Future runtime model files. Training stays out of this package. |
-| `app/ui/` | Future Streamlit screens. |
+| `app/ui/` | Streamlit screen and the review logic it calls. |
 | `ml/datasets/` | Labeled data used for training and evaluation. |
 | `ml/notebooks/` | Exploratory notebooks. |
 | `ml/training/` | Future training scripts. |
@@ -259,3 +273,51 @@ Digit, classification, and reconstruction scores are `null` when `--labels` is o
 ### Limits
 
 This milestone does not train a model. Template matching still fails on unseen typefaces, blur, and digits that touch a grid line. Photographs in `sample_images/real` do not have a committed ground-truth file, so this repository does not state an accuracy for them. Label a held-out set of real cells, keep those cells out of the template manifest, and only then judge the recognizer. A CNN is the following milestone.
+
+## Real-world OCR benchmark
+
+The benchmark dataset is built from the photographs already used by the pipeline. Preparation extracts every cell, writes a contact sheet, and creates a manifest whose `digit` column is empty. Fill that column by hand. The recognizer output next to each image is a diagnostic, not a label.
+
+```bash
+python scripts/prepare_dataset.py sample_images/real \
+  --output evaluation_output/dataset \
+  --splits path/to/splits.csv
+```
+
+`--splits` is optional at preparation time. When it is supplied, every extracted photograph must appear once:
+
+```csv
+image,split
+one.jpg,template
+two.jpg,evaluation
+```
+
+`split` is `template` or `evaluation`. All cells from one photograph take that split. A photograph cannot be in both. The command writes `manifest.csv`, `splits.csv`, and `dataset.json` beside the extracted cells and contact sheets. It does not modify the files in `sample_images/real`.
+
+### Manifest
+
+```csv
+image,cell_id,cell,row,column,order,split,digit
+one.jpg,r00_c00,one.jpg/cells/r00_c00.png,0,0,9,template,0
+one.jpg,r00_c01,one.jpg/cells/r00_c01.png,0,1,9,template,5
+two.jpg,r00_c00,two.jpg/cells/r00_c00.png,0,0,9,evaluation,2
+two.jpg,r00_c01,two.jpg/cells/r00_c01.png,0,1,9,evaluation,uncertain
+two.jpg,r00_c02,two.jpg/cells/r00_c02.png,0,2,9,evaluation,invalid
+two.jpg,r00_c03,two.jpg/cells/r00_c03.png,0,3,9,evaluation,
+```
+
+`cell_id` is the stable `rNN_cNN` name. `0` is blank. `1`–`9` must fit the order. `uncertain` is unreadable. `invalid` is an unusable extraction. An empty digit is still unlabelled. Leave template blanks as `0`; only labelled digits `1`–`9` are loaded as templates.
+
+### Scoring the held-out split
+
+```bash
+python scripts/benchmark_digits.py \
+  --manifest evaluation_output/dataset/manifest.csv \
+  --output evaluation_output/benchmark
+```
+
+The scorer is the existing `evaluate_labels` routine. It reads evaluation cells only. Template cells are not scored. `--no-builtin` uses the manually labelled template digits and no font templates. If any evaluation digit is empty, the report sets `verified` to false and `accuracy` to null. It does not fill those cells from a prediction.
+
+When every evaluation cell has a manual label, `report.json` includes overall accuracy, per-digit precision, recall, and accuracy, a confusion matrix, the uncertain prediction rate, blank-versus-occupied precision and recall, and the same scores grouped by order and by source photograph. Incorrect rows include the cell path. `report.csv` lists each evaluation cell. `config.json` records the manifest, the split sizes, and whether the built-in templates were used.
+
+Generated files belong under `evaluation_output/`, which is gitignored. Do not commit the photographs or these outputs. A result on drawings or font glyphs is not an accuracy for the photographs. No accuracy is claimed until the evaluation split has been labelled by hand. A CNN is still a later milestone.

@@ -1,5 +1,5 @@
 """Streamlit interface.
 
-The UI will display the recognized puzzle, accept digit corrections, and
-show the solution and solving steps. Puzzle rules stay in ``app.core``.
+Screens live in ``streamlit_app``. Puzzle edits and upload checks live in
+``review`` so they can be tested without starting the server.
 """

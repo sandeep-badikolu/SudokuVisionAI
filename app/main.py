@@ -6,8 +6,8 @@ digit recognition, validation, and solving are not called from here yet.
 
 
 def main() -> None:
-    """Report that the application shell exists and the UI is not wired up."""
-    print("SudokuVision AI project structure is ready. The UI is not implemented yet.")
+    """Point to the Streamlit application."""
+    print("Launch the UI with: python -m streamlit run app/ui/streamlit_app.py")
 
 
 if __name__ == "__main__":

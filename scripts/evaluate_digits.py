@@ -129,15 +129,20 @@ def _score_row(
     filename = (row.get("filename") or "").strip()
     if not filename:
         raise ValueError(f"label row {row_number} has an empty filename")
-    expected = _parse_expected(row.get("digit") or "", row_number)
-    order = _parse_order(row.get("order") or "", row_number, expected)
+    expected, marker = _parse_expected(row.get("digit") or "", row_number)
+    order = _parse_order(row.get("order") or "", row_number, 0 if marker else expected)
     image_path = (root / filename).resolve()
+    source = (row.get("image") or "").strip()
     record: dict[str, object] = {
         "filename": filename,
+        "path": str(image_path),
+        "image": source or None,
         "expected": expected,
+        "marker": marker,
         "order": order,
         "predicted": None,
         "status": None,
+        "occupancy": None,
         "correct": False,
         "leakage": False,
         "failure_reason": None,
@@ -151,17 +156,19 @@ def _score_row(
         record["failure_reason"] = "could not read image"
         return record
     try:
-        result = recognize_cell(image, order=order, bank=bank)
+        result = recognize_cell(image, order=order, bank=bank)  # type: ignore[arg-type]
     except RecognitionError as exc:
         record["failure_reason"] = str(exc)
         return record
     record["predicted"] = result.digit
     record["status"] = result.status
+    record["occupancy"] = result.diagnostics.get("occupancy")
     record["confidence"] = result.confidence
     record["blank_confidence"] = result.blank_confidence
-    record["correct"] = (
-        result.status == RecognitionStatus.RECOGNIZED and result.digit == expected
-    ) or (result.status == RecognitionStatus.BLANK and expected == 0)
+    if marker is None:
+        record["correct"] = (
+            result.status == RecognitionStatus.RECOGNIZED and result.digit == expected
+        ) or (result.status == RecognitionStatus.BLANK and expected == 0)
     return record
 
 
@@ -169,7 +176,11 @@ def _summarize(labels_path: Path, rows: list[dict[str, object]]) -> dict[str, ob
     scored = [
         row
         for row in rows
-        if not row["leakage"] and row["failure_reason"] is None
+        if (
+            row["marker"] is None
+            and not row["leakage"]
+            and row["failure_reason"] is None
+        )
     ]
     correct = [row for row in scored if row["correct"] is True]
     uncertain = [row for row in scored if row["status"] == RecognitionStatus.UNCERTAIN]
@@ -187,25 +198,27 @@ def _summarize(labels_path: Path, rows: list[dict[str, object]]) -> dict[str, ob
         "correct_count": len(correct),
         "incorrect_count": len(incorrect),
         "uncertain_count": len(uncertain),
+        "uncertain_rate": _divide(len(uncertain), len(scored)),
+        "excluded_uncertain": sum(row["marker"] == "uncertain" for row in rows),
+        "excluded_invalid": sum(row["marker"] == "invalid" for row in rows),
         "leakage_count": sum(1 for row in rows if row["leakage"]),
         "failure_count": sum(1 for row in rows if row["failure_reason"]),
         "accuracy": accuracy,
         "per_digit": _per_digit(scored),
+        "blank_classification": _blank_classification(scored),
         "by_order": _by_order(scored),
+        "by_image": _by_image(scored),
         "confusion": _confusion(scored),
-        "incorrect": [
+        "incorrect": [_prediction_brief(row) for row in incorrect],
+        "uncertain": [
             {
                 "filename": row["filename"],
+                "path": row["path"],
                 "expected": row["expected"],
-                "predicted": row["predicted"],
-                "status": row["status"],
             }
-            for row in incorrect
-        ],
-        "uncertain": [
-            {"filename": row["filename"], "expected": row["expected"]}
             for row in uncertain
         ],
+        "predictions": [_prediction_brief(row) for row in rows],
     }
 
 
@@ -216,10 +229,13 @@ def _per_digit(rows: list[dict[str, object]]) -> dict[str, dict[str, object]]:
         if not group:
             continue
         hits = sum(1 for row in group if row["correct"] is True)
+        predicted = sum(1 for row in rows if _predicted_name(row) == str(digit))
         report[str(digit)] = {
             "labelled": len(group),
             "correct": hits,
             "accuracy": round(hits / len(group), 4),
+            "precision": _divide(hits, predicted),
+            "recall": _divide(hits, len(group)),
         }
     return report
 
@@ -241,17 +257,95 @@ def _by_order(rows: list[dict[str, object]]) -> dict[str, dict[str, object]]:
     return report
 
 
+def _by_image(rows: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    report: dict[str, dict[str, object]] = {}
+    images = {row["image"] for row in rows if row["image"]}
+    for image in sorted(str(item) for item in images):
+        group = [row for row in rows if row["image"] == image]
+        hits = sum(1 for row in group if row["correct"] is True)
+        report[image] = {
+            "labelled": len(group),
+            "correct": hits,
+            "uncertain": sum(
+                1 for row in group if row["status"] == RecognitionStatus.UNCERTAIN
+            ),
+            "accuracy": _divide(hits, len(group)),
+        }
+    return report
+
+
+def _blank_classification(rows: list[dict[str, object]]) -> dict[str, object]:
+    counts = {
+        "blank": {"tp": 0, "fp": 0, "fn": 0},
+        "occupied": {"tp": 0, "fp": 0, "fn": 0},
+    }
+    uncertain = 0
+    for row in rows:
+        expected = "blank" if row["expected"] == 0 else "occupied"
+        predicted = row["occupancy"]
+        if predicted not in {"blank", "occupied"}:
+            uncertain += 1
+            counts[expected]["fn"] += 1
+            continue
+        if predicted == expected:
+            counts[expected]["tp"] += 1
+        else:
+            counts[expected]["fn"] += 1
+            counts[str(predicted)]["fp"] += 1
+    return {
+        "compared": len(rows),
+        "occupancy_uncertain": uncertain,
+        "blank": _class_rates(counts["blank"]),
+        "occupied": _class_rates(counts["occupied"]),
+    }
+
+
 def _confusion(rows: list[dict[str, object]]) -> dict[str, dict[str, int]]:
     matrix: dict[str, dict[str, int]] = {}
     for row in rows:
         expected = str(row["expected"])
-        if row["status"] == RecognitionStatus.UNCERTAIN or row["predicted"] is None:
-            predicted = "uncertain"
-        else:
-            predicted = str(row["predicted"])
+        predicted = _predicted_name(row)
         matrix.setdefault(expected, {})
         matrix[expected][predicted] = matrix[expected].get(predicted, 0) + 1
     return matrix
+
+
+def _prediction_brief(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "filename": row["filename"],
+        "path": row["path"],
+        "image": row["image"],
+        "expected": row["expected"],
+        "marker": row["marker"],
+        "predicted": row["predicted"],
+        "status": row["status"],
+        "correct": row["correct"],
+    }
+
+
+def _predicted_name(row: dict[str, object]) -> str:
+    if row["status"] == RecognitionStatus.UNCERTAIN or row["predicted"] is None:
+        return "uncertain"
+    return str(row["predicted"])
+
+
+def _class_rates(counts: dict[str, int]) -> dict[str, object]:
+    tp = counts["tp"]
+    fp = counts["fp"]
+    fn = counts["fn"]
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": _divide(tp, tp + fp),
+        "recall": _divide(tp, tp + fn),
+    }
+
+
+def _divide(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return round(numerator / denominator, 4)
 
 
 def _read_labels(path: Path) -> list[tuple[int, dict[str, str]]]:
@@ -263,16 +357,19 @@ def _read_labels(path: Path) -> list[tuple[int, dict[str, str]]]:
         return [(number, row) for number, row in enumerate(reader, start=2)]
 
 
-def _parse_expected(raw: str, row_number: int) -> int:
-    if raw.strip().lower() in {"true", "false"}:
+def _parse_expected(raw: str, row_number: int) -> tuple[int | None, str | None]:
+    text = raw.strip().lower()
+    if text in {"uncertain", "invalid"}:
+        return None, text
+    if text in {"true", "false"} or not text:
         raise ValueError(f"label row {row_number} digit is invalid")
     try:
-        digit = int(raw.strip())
+        digit = int(text)
     except ValueError as exc:
         raise ValueError(f"label row {row_number} digit is invalid") from exc
     if digit < 0 or digit > 9:
         raise ValueError(f"label row {row_number} digit must be 0–9")
-    return digit
+    return digit, None
 
 
 def _parse_order(raw: str, row_number: int, expected: int) -> int:
