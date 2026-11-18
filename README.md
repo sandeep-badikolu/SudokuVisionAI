@@ -166,3 +166,96 @@ The report gives overall accuracy, per-digit accuracy, a confusion matrix, the u
 ### Limits
 
 Template matching follows the fonts and the labelled examples it was given. A new typeface, a heavy blur, or a digit that touches the grid line can stay uncertain or match a similar glyph such as 3 and 8 or 1 and 7. Pencil marks that the occupancy step calls occupied are passed to OCR. This baseline does not read handwriting and does not fine-tune itself. Measure it on a labelled hold-out set before describing how it behaves on real puzzles. A CNN is the following milestone because it can learn the variation that a fixed template set misses.
+
+## Grid reconstruction
+
+`reconstruct` places recognition results on a 4×4, 6×6, or 9×9 grid. Confirmed blanks stay `0`. Uncertain cells stay null and are listed in `unresolved_cells`; they are not stored as empty clues. Each cell keeps its source, recognition status, and the separate blank and digit confidences.
+
+Confirmed digits are checked with the existing validator: dimensions, the digit range for that order, and duplicates in rows, columns, and boxes. Errors include the row, column, conflicting value, and the cells involved.
+
+The solver runs only when that check passes and every cell is resolved. `original_clues` remains the recognized grid. `solution` is set only when the solver proves a single completion. An invalid grid, a grid that still has uncertain cells, an unsolvable puzzle, and a puzzle with several solutions do not receive a chosen solution.
+
+```python
+from app.recognition import reconstruct, reconstruct_image
+
+built = reconstruct(order, recognition_results)
+report = built.to_report()
+```
+
+`reconstruct_image` runs the existing detector, cell extractor, and template recognizer, then reconstructs. Its output on photographs is not a measured OCR accuracy.
+
+## End-to-end pipeline
+
+`scripts/run_pipeline.py` connects the existing stages for one image or a directory:
+
+image loading → grid detection → perspective correction → cell extraction → blank classification → digit recognition → grid reconstruction → validation → solver.
+
+A failed image is recorded and the directory continues. The solver still runs only when reconstruction is valid and every cell is resolved.
+
+```bash
+python scripts/run_pipeline.py sample_images/real \
+  --output evaluation_output/pipeline
+
+python scripts/run_pipeline.py sample_images/real/one.jpg \
+  --output evaluation_output/pipeline \
+  --order 9 \
+  --templates path/to/templates.csv \
+  --labels path/to/labels.csv
+```
+
+`--order`, `--templates`, and `--labels` are optional. `--no-builtin` keeps only the CSV templates. Evaluation rows in that CSV are not loaded. Generated files stay under the output directory, which should remain outside tracked source folders. `evaluation_output/` is gitignored.
+
+Each successful image directory contains:
+
+```text
+puzzle.jpg/
+  original.jpg
+  detected_grid.png
+  perspective_grid.png
+  contact_sheet.png
+  cells/r00_c00.png
+  recognition.json
+  reconstruction.json
+```
+
+The directory also contains `report.json`, `report.csv`, and `labels_template.csv`.
+
+### Ground truth
+
+The pipeline writes `labels_template.csv` with an empty `digit` column. Those cells are unlabelled. Fill the column by hand. Do not copy recognizer output into it.
+
+```csv
+image,cell,row,column,order,digit
+puzzle.jpg,puzzle.jpg/cells/r00_c00.png,0,0,9,0
+puzzle.jpg,puzzle.jpg/cells/r00_c01.png,0,1,9,5
+puzzle.jpg,puzzle.jpg/cells/r00_c02.png,0,2,9,uncertain
+puzzle.jpg,puzzle.jpg/cells/r00_c03.png,0,3,9,invalid
+puzzle.jpg,puzzle.jpg/cells/r00_c04.png,0,4,9,
+```
+
+`0` is a blank cell. `1`–`9` are printed digits and must fit the order. `uncertain` and `invalid` mark labels that should not be scored as a digit. An empty digit stays unlabelled. `cell` is the stable crop name. A row whose resolved cell path is also a template image is leakage and is not scored.
+
+Keep template photographs and held-out photographs in separate files. The same crop must not appear as a template and as an evaluation label.
+
+### Metrics
+
+`report.json` reports each stage on its own. There is no combined accuracy.
+
+| Stage | What it counts |
+| --- | --- |
+| Grid detection | Images with a detected grid, over images attempted |
+| Cell extraction | Detected images whose cell count is order² |
+| Blank versus occupied | Precision and recall against labels 0 and 1–9. Occupancy-uncertain is not a true positive |
+| Digit recognition | Correct 0–9 labels over labelled 0–9 cells, plus a confusion matrix and per-digit precision, recall, and accuracy |
+| Uncertain recognition | Recognition status `uncertain` over extracted cells |
+| Reconstruction | Labelled cells whose reconstructed value matches, and fully labelled puzzles that match every cell |
+| Validation | Reconstructed images whose puzzle is valid |
+| Solver completion | Unique solutions over puzzles the solver was allowed to attempt |
+
+Digit, classification, and reconstruction scores are `null` when `--labels` is omitted or every digit cell is still empty. Detection and the other operational rates can still be reported. They are not real-world digit accuracy. A score on synthetic drawings is not a score on photographs.
+
+`report.csv` has one row per image: status, order, cell count, validation, solver status, and the failure reason. Incorrect digit predictions and uncertain cell locations are in `report.json`.
+
+### Limits
+
+This milestone does not train a model. Template matching still fails on unseen typefaces, blur, and digits that touch a grid line. Photographs in `sample_images/real` do not have a committed ground-truth file, so this repository does not state an accuracy for them. Label a held-out set of real cells, keep those cells out of the template manifest, and only then judge the recognizer. A CNN is the following milestone.

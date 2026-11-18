@@ -30,6 +30,11 @@ from app.recognition.digit_templates import (
     merge_banks,
 )
 from app.recognition.errors import RecognitionError
+from app.recognition.grid_reconstruction import (
+    Reconstruction,
+    reconstruct,
+    reconstruct_image,
+)
 
 __all__ = [
     "CANVAS_SIDE",
@@ -40,6 +45,9 @@ __all__ = [
     "RecognitionError",
     "RecognitionResult",
     "RecognitionStatus",
+    "Reconstruction",
+    "reconstruct",
+    "reconstruct_image",
     "TemplateBank",
     "allowed_digits",
     "builtin_template_bank",
