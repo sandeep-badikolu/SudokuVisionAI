@@ -15,6 +15,7 @@ from pathlib import Path
 from app.pipeline import CellLabel, load_labels, run_directory
 
 SPLITS = ("template", "evaluation")
+SOURCE_TYPES = ("synthetic", "photographed", "unknown")
 MANIFEST_FIELDS = (
     "image",
     "cell_id",
@@ -24,6 +25,7 @@ MANIFEST_FIELDS = (
     "order",
     "split",
     "digit",
+    "development_split",
 )
 _NOTE = (
     "The digit column is empty until a person fills it. "
@@ -44,6 +46,8 @@ class ManifestRow:
     split: str
     digit: int | None
     marker: str | None
+    development_split: str | None = None
+    source_type: str | None = None
 
 
 def prepare_dataset(
@@ -139,6 +143,7 @@ def load_manifest(path: Path) -> tuple[ManifestRow, ...]:
         for label, raw in zip(labels, raw_rows, strict=True)
     )
     _ensure_one_split_per_image(rows)
+    _ensure_one_source_per_image(rows)
     return rows
 
 
@@ -156,12 +161,61 @@ def evaluation_rows(rows: ManifestRows) -> tuple[ManifestRow, ...]:
 
 
 def template_rows(rows: ManifestRows) -> tuple[ManifestRow, ...]:
-    """Return manually labelled digits that may be used as templates."""
-    return tuple(
+    """Return manually labelled digits that may be used as templates.
+
+    Evaluation photographs are never templates, even when they contain a digit.
+    Blank labels are not templates. Empty cells are not labels.
+    """
+    evaluation = {row.image for row in rows if row.split == "evaluation"}
+    chosen = tuple(
         row
         for row in rows
         if row.split == "template" and row.digit is not None and row.digit != 0
     )
+    leaked = [row.image for row in chosen if row.image in evaluation]
+    if leaked:
+        raise ValueError(f"{leaked[0]} is an evaluation image and cannot be a template")
+    return chosen
+
+
+def validate_ground_truth(rows: ManifestRows) -> dict[str, object]:
+    """Check split, order, and label rules without changing the rows.
+
+    Empty digits are unlabelled. Uncertain and invalid markers are reported
+    separately because they are excluded from digit accuracy.
+    """
+    materialized = tuple(rows)
+    _ensure_one_split_per_image(materialized)
+    seen: set[tuple[str, str]] = set()
+    orders: dict[str, int] = {}
+    for row in materialized:
+        if row.order not in {4, 6, 9}:
+            raise ValueError(f"{row.image} has order {row.order}")
+        if row.marker is not None and row.digit is not None:
+            raise ValueError(f"{row.image} {row.cell_id} has both a digit and a marker")
+        if row.marker not in {None, "uncertain", "invalid"}:
+            raise ValueError(f"{row.image} {row.cell_id} has marker {row.marker!r}")
+        if row.digit is not None and (row.digit < 0 or row.digit > row.order):
+            raise ValueError(
+                f"{row.image} {row.cell_id} digit {row.digit} "
+                f"is outside a {row.order}×{row.order} grid"
+            )
+        key = (row.image, row.cell_id)
+        if key in seen:
+            raise ValueError(f"{row.image} {row.cell_id} is duplicated")
+        seen.add(key)
+        previous = orders.get(row.image)
+        if previous is not None and previous != row.order:
+            raise ValueError(f"{row.image} has more than one grid order")
+        orders[row.image] = row.order
+    template_rows(materialized)
+    evaluation_rows(materialized)
+    return {
+        "images": len(orders),
+        "cells": len(materialized),
+        "one_split_per_image": True,
+        "evaluation_images_excluded_from_templates": True,
+    }
 
 
 def _manifest_row(label: CellLabel, raw: dict[str, str]) -> ManifestRow:
@@ -172,6 +226,16 @@ def _manifest_row(label: CellLabel, raw: dict[str, str]) -> ManifestRow:
         raise ValueError(f"{label.image} must be template or evaluation")
     fallback = f"r{label.row:02d}_c{label.column:02d}"
     cell_id = (raw.get("cell_id") or "").strip() or fallback
+    role = (raw.get("development_split") or "").strip().lower()
+    if role == "":
+        development_split = None
+    elif role in {"train", "validation", "holdout"}:
+        development_split = role
+    else:
+        raise ValueError(
+            f"{label.image} has invalid development assignment {role!r}"
+        )
+    source_type = _source_type(label.image, raw)
     return ManifestRow(
         image=label.image,
         cell_id=cell_id,
@@ -182,7 +246,25 @@ def _manifest_row(label: CellLabel, raw: dict[str, str]) -> ManifestRow:
         split=split,
         digit=label.digit,
         marker=label.marker,
+        development_split=development_split,
+        source_type=source_type,
     )
+
+
+def _source_type(image: str, raw: dict[str, str]) -> str | None:
+    """Return a stored source, or None when the column is absent or empty.
+
+    An empty value is not treated as ``unknown``. That word is written only
+    when provenance was reviewed and is unavailable.
+    """
+    if "source_type" not in raw:
+        return None
+    token = (raw.get("source_type") or "").strip().lower()
+    if token == "":
+        return None
+    if token not in SOURCE_TYPES:
+        raise ValueError(f"{image} has invalid source type {token!r}")
+    return token
 
 
 def _ensure_one_split_per_image(rows: tuple[ManifestRow, ...]) -> None:
@@ -192,6 +274,16 @@ def _ensure_one_split_per_image(rows: tuple[ManifestRow, ...]) -> None:
         if previous is not None and previous != row.split:
             raise ValueError(f"{row.image} is assigned to more than one split")
         seen[row.image] = row.split
+
+
+def _ensure_one_source_per_image(rows: tuple[ManifestRow, ...]) -> None:
+    seen: dict[str, str | None] = {}
+    for row in rows:
+        if row.image not in seen:
+            seen[row.image] = row.source_type
+            continue
+        if seen[row.image] != row.source_type:
+            raise ValueError(f"{row.image} has more than one source type")
 
 
 def _require_known_images(
@@ -236,6 +328,7 @@ def _rows_from_report(
                     "order": result["order"],
                     "split": assignments.get(image, ""),
                     "digit": "",
+                    "development_split": "",
                 }
             )
     return rows

@@ -18,7 +18,7 @@ from app.vision.cell_segmenter import (
     segment_cells_at_lines,
 )
 from app.vision.errors import GridDetectionError
-from app.vision.grid_lines import GridLineAnalysis, analyze_grid_lines
+from app.vision.grid_lines import AxisLineEvidence, GridLineAnalysis, analyze_grid_lines
 from app.vision.image_preprocessor import preprocess
 from app.vision.perspective_transform import order_corners, warp_quad
 
@@ -28,6 +28,12 @@ _MIN_SIDE_RATIO = 0.5
 _MIN_ANGLE = 40.0
 _MAX_ANGLE = 150.0
 _MIN_CONFIDENCE = 0.6
+# A faint inner line can miss the production peak threshold. Equal slicing is
+# allowed only when the outer border and every detected peak already sit on
+# the same 9×9 lattice. Production recognition does not use this path.
+_EQUAL_NINE_BORDER = 2.0
+_EQUAL_NINE_TOLERANCE = 6.0
+_EQUAL_NINE_MIN_PEAKS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +152,93 @@ def extract_cells(
             detection.warped, horizontal, vertical
         )
     return detection, segment_cells(detection.warped, chosen)
+
+
+def extract_cells_faint_nine(
+    image: np.ndarray,
+) -> tuple[GridDetection, tuple[CellPatch, ...]]:
+    """Extract a 9×9 grid, including one whose inner lines are faint.
+
+    ``extract_cells`` is tried first and its result is returned unchanged.
+    When that check rejects a warped square, the cells are divided equally
+    only if both axes already show an outer border and every detected peak
+    lies on a 9×9 lattice. Recognition and the ordinary importer do not
+    call this function.
+    """
+    try:
+        return extract_cells(image)
+    except GridDetectionError as exc:
+        boundary = exc.boundary
+        side = 0 if boundary is None else int(boundary.warped.shape[0])
+        if boundary is None or not _equal_nine_lattice(boundary.lines, side):
+            raise
+        lines = _equal_nine_lines(side, boundary.lines)
+        detection = GridDetection(
+            corners=boundary.corners.copy(),
+            confidence=boundary.quad_confidence,
+            warped=boundary.warped,
+            order=9,
+            diagnostics={
+                "threshold": boundary.overlay,
+                "edges": boundary.overlay,
+                "overlay": boundary.overlay,
+                "horizontal_profile": boundary.lines.horizontal_profile,
+                "vertical_profile": boundary.lines.vertical_profile,
+            },
+            quad_confidence=boundary.quad_confidence,
+            grid_confidence=0.0,
+            lines=lines,
+        )
+        return detection, segment_cells(boundary.warped, 9)
+
+
+def _equal_nine_lattice(lines: GridLineAnalysis, side: int) -> bool:
+    if side < 2:
+        return False
+    ideal = tuple(index * (side - 1) / 9 for index in range(10))
+    horizontal = _axis_on_lattice(lines.horizontal.merged_centers, ideal)
+    vertical = _axis_on_lattice(lines.vertical.merged_centers, ideal)
+    return horizontal and vertical
+
+
+def _axis_on_lattice(centers: tuple[float, ...], ideal: tuple[float, ...]) -> bool:
+    if len(centers) < _EQUAL_NINE_MIN_PEAKS:
+        return False
+    if abs(centers[0] - ideal[0]) > _EQUAL_NINE_BORDER:
+        return False
+    if abs(centers[-1] - ideal[-1]) > _EQUAL_NINE_BORDER:
+        return False
+    return all(
+        min(abs(center - line) for line in ideal) <= _EQUAL_NINE_TOLERANCE
+        for center in centers
+    )
+
+
+def _equal_nine_lines(side: int, observed: GridLineAnalysis) -> GridLineAnalysis:
+    centers = tuple(index * (side - 1) / 9 for index in range(10))
+    pitch = (side - 1) / 9
+    axis = AxisLineEvidence(
+        raw_peak_count=len(centers),
+        merged_peak_count=len(centers),
+        inferred_order=9,
+        pitch=pitch,
+        gap_min=pitch,
+        gap_max=pitch,
+        gap_ratio=1.0,
+        regular=True,
+        raw_centers=centers,
+        merged_centers=centers,
+    )
+    return GridLineAnalysis(
+        horizontal=axis,
+        vertical=axis,
+        order=9,
+        grid_confidence=None,
+        recovery="equal_nine_faint_lines",
+        rejection_reason=None,
+        horizontal_profile=observed.horizontal_profile,
+        vertical_profile=observed.vertical_profile,
+    )
 
 
 def estimate_grid_order(warped: np.ndarray) -> int | None:
