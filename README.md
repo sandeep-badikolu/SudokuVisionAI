@@ -96,3 +96,73 @@ python scripts/extract_cells.py sample_images/real \
 ```
 
 The output has the warped grid, one image per cell, a contact sheet, `cells.json` for that image, and `report.json` for the directory. Counts of blank, occupied, and uncertain cells are not digit accuracy.
+
+## Digit recognition
+
+The baseline reader is classical template matching. It is not a neural network. A CNN is a later milestone, once labelled cell photographs show where the templates fail.
+
+### Workflow
+
+1. `extract_cells` warps the puzzle and returns one crop per cell.
+2. The blank-cell classifier marks each crop blank, occupied, or uncertain. Its confidence stays on `blank_confidence`.
+3. A blank cell is digit `0`. OCR does not run.
+4. An uncertain cell stays uncertain. No digit is stored.
+5. An occupied cell is cleaned, centered on a 32×32 canvas without stretching, and compared with every template for the digits that grid size allows. 4×4 uses 1–4, 6×6 uses 1–6, and 9×9 uses 1–9.
+6. The best similarity per digit is kept. The result includes the top three digits, their similarities, and the gap between the best and second-best.
+7. The digit is accepted only when the best similarity and that gap are both strong enough. Otherwise the status is `uncertain` and `digit` is null. A weak match is not stored as a guess.
+
+`confidence` on a recognized digit is the match confidence. It is null for blank and uncertain cells. Do not treat it as the blank-cell confidence.
+
+### Templates
+
+Built-in templates are rendered from several Hershey fonts and stroke weights the first time the recognizer runs. Real photographs need extra templates. Put those images in their own directory, not under `evaluation_output/`, and describe them with a CSV next to the files:
+
+```csv
+filename,digit,role
+one_printed.png,1,template
+one_held_out.png,1,evaluation
+```
+
+`filename` is relative to the CSV. `digit` is 1–9. `role` is `template` or `evaluation`. Evaluation rows are not loaded into the matcher, so those cells can be scored later without training on them.
+
+```python
+from app.recognition import (
+    builtin_template_bank,
+    load_template_manifest,
+    merge_banks,
+    recognize_cell,
+)
+
+bank = merge_banks(builtin_template_bank(), load_template_manifest(path))
+result = recognize_cell(cell_image, order=9, bank=bank)
+```
+
+`builtin_template_bank` is exported from `app.recognition`.
+
+### Commands
+
+Recognize through the library, as above, or score a labelled set:
+
+```bash
+python scripts/evaluate_digits.py \
+  --labels tests/fixtures/digit_labels_sample.csv \
+  --templates path/to/templates.csv \
+  --output evaluation_output/digit_eval
+```
+
+`--templates` is optional. Omit `--no-builtin` to keep the font templates as well. The label CSV lives beside the images it names:
+
+```csv
+filename,digit,order
+cells/r00_c00.png,0,9
+cells/r00_c01.png,5,9
+cells/r00_c02.png,2,4
+```
+
+`digit` is 0 for an empty cell and 1–9 for a printed digit. `order` is 4, 6, or 9. A missing `order` is treated as 9. A copy of this header is `tests/fixtures/digit_labels_sample.csv`. The sample paths are documentation, not labelled photographs.
+
+The report gives overall accuracy, per-digit accuracy, a confusion matrix, the uncertain rows, and the incorrect rows. Accuracy is `correct / scored` on that manifest only. Uncertain predictions are scored and are not correct. Rows whose image is also a template are listed as leakage and are not scored. No accuracy is produced for photographs that do not appear in the manifest.
+
+### Limits
+
+Template matching follows the fonts and the labelled examples it was given. A new typeface, a heavy blur, or a digit that touches the grid line can stay uncertain or match a similar glyph such as 3 and 8 or 1 and 7. Pencil marks that the occupancy step calls occupied are passed to OCR. This baseline does not read handwriting and does not fine-tune itself. Measure it on a labelled hold-out set before describing how it behaves on real puzzles. A CNN is the following milestone because it can learn the variation that a fixed template set misses.
